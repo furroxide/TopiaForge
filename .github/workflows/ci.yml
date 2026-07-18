@@ -25,119 +25,391 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
+  csharp-tests:
+    name: Build and test C# runtime, SDK, and mods
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: "10.0.301"
+
+      - name: Verify exact .NET SDK
+        run: test "$(dotnet --version)" = 10.0.301
+
+      - name: Install managed-reference archive dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Resolve Robotopia refs cache key
+        id: refs-cache
+        shell: pwsh
+        env:
+          ROBOTOPIA_REFS_SOURCE_PLATFORM: ${{ vars.ROBOTOPIA_REFS_SOURCE_PLATFORM }}
+        run: ./tools/restore-robotopia-managed-refs.ps1 -Source public -CacheKeyOnly
+
+      - name: Cache Robotopia managed refs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/robotopia-managed-refs-cache
+          key: ${{ steps.refs-cache.outputs.key }}
+
+      - name: Restore Robotopia managed refs
+        shell: pwsh
+        env:
+          ROBOTOPIA_REFS_CACHE: ${{ runner.temp }}/robotopia-managed-refs-cache
+          ROBOTOPIA_REFS_SOURCE_PLATFORM: ${{ vars.ROBOTOPIA_REFS_SOURCE_PLATFORM }}
+        run: ./tools/restore-robotopia-managed-refs.ps1 -Source public -RequireLatest
+
+      - name: Verify formatting
+        run: |
+          dotnet restore TopiaForge.slnx
+          dotnet format TopiaForge.slnx --verify-no-changes --no-restore
+
+      - name: Build solution
+        run: dotnet build TopiaForge.slnx -c Release --no-restore
+
+      - name: Run test harness
+        run: >-
+          dotnet run
+          --project tests/TopiaForge.ModManager.Tests/TopiaForge.ModManager.Tests.csproj
+          -c Release
+
+      - name: Audit game-binding coverage
+        run: >-
+          dotnet run
+          --project src/TopiaForge.GameCompat.Extractor/TopiaForge.GameCompat.Extractor.csproj
+          -c Release -- audit --strict
+
   dart-tests:
     name: Analyze and test Dart packages
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         package:
           - packages/launcher_domain
           - packages/launcher_data
-          - apps/robotopia_cli
+          - apps/topiaforge_cli
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          lfs: true
+          persist-credentials: false
 
       - name: Set up Dart
-        uses: dart-lang/setup-dart@v1
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
         with:
-          sdk: stable
+          sdk: "3.11.1"
 
       - name: Set up .NET
-        if: matrix.package == 'apps/robotopia_cli'
-        uses: actions/setup-dotnet@v4
+        if: matrix.package == 'apps/topiaforge_cli'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.301"
 
       - name: Analyze
         working-directory: ${{ matrix.package }}
         run: |
-          dart pub get
+          if git ls-files --error-unmatch -- pubspec.lock >/dev/null 2>&1; then
+            dart pub get --enforce-lockfile
+          else
+            dart pub get
+          fi
+          targets=(lib test)
+          if [[ -d bin ]]; then targets+=(bin); fi
+          dart format --output=none --set-exit-if-changed "${targets[@]}"
           dart analyze --fatal-infos
 
       - name: Test
         working-directory: ${{ matrix.package }}
         run: dart test
 
+  flutter-tests:
+    name: Analyze and test Flutter packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: "3.41.4"
+          cache: true
+
+      - name: Analyze and test shared UI
+        working-directory: packages/launcher_ui
+        run: |
+          flutter pub get
+          dart format --output=none --set-exit-if-changed lib test
+          flutter analyze
+          flutter test
+
+      - name: Analyze and test launcher
+        working-directory: apps/topiaforge_launcher_flutter
+        run: |
+          flutter pub get --enforce-lockfile
+          dart format --output=none --set-exit-if-changed lib test
+          flutter analyze
+          flutter test
+
+  sidecar-checks:
+    name: Validate UGC Automerge sidecar
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: tools/ugc-automerge-sidecar/package-lock.json
+
+      - name: Restore and check sidecar
+        working-directory: tools/ugc-automerge-sidecar
+        run: |
+          node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)'
+          npm ci --ignore-scripts --no-audit --no-fund
+          find . -path ./node_modules -prune -o -name '*.mjs' -print0 |
+            xargs -0 -n1 node --check
+          npm test
+          npm ls --omit=dev
+          npm audit --omit=dev --audit-level=moderate
+          output="$(node index.mjs --check)"
+          echo "$output"
+          grep -F "deps        : installed" <<< "$output"
+
+  repository-audits:
+    name: Validate workflows and repository file hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          lfs: true
+          persist-credentials: false
+
+      - name: Reject retired ecosystem names
+        run: python3 .github/scripts/check_topiaforge_residue.py
+
+      - name: Test generated-payload residue scanning
+        run: python3 .github/scripts/test_check_topiaforge_residue.py
+
+      - name: Test repository governance audit
+        run: python3 .github/scripts/test_audit_repository_governance.py
+
+      - name: Test protected release evidence gates
+        run: |
+          bash tools/test-verify-release-tag.sh
+          bash tools/test-verify-release-candidate.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.24.x"
+          cache: false
+
+      - name: Lint GitHub Actions workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          actionlint
+
+      - name: Parse JSON and YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files -z '*.json' | xargs -0 -r -n1 jq empty
+          mapfile -t yaml_files < <(git ls-files '*.yml' '*.yaml')
+          ruby -e '
+            require "yaml"
+            ARGV.each { |file| YAML.safe_load(File.read(file), aliases: true) }
+          ' "${yaml_files[@]}"
+
+      - name: Parse PowerShell and shell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in (git ls-files '*.ps1')) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file,
+              [ref]$null,
+              [ref]$errors
+            ) | Out-Null
+            foreach ($error in $errors) {
+              Write-Error "$file`: $($error.Message)"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          foreach ($file in (git ls-files '*.sh' '*.bash')) {
+            & bash -n $file
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          foreach ($file in (git ls-files '.githooks/*')) {
+            if ((Get-Content -LiteralPath $file -TotalCount 1) -match '^#!.*\b(sh|bash)\b') {
+              & sh -n $file
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+
+      - name: Analyze PowerShell safety and correctness
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 `
+            -Repository PSGallery -Scope CurrentUser -Force
+          $findings = @(Invoke-ScriptAnalyzer -Path tools -Recurse `
+            -Settings .github/PSScriptAnalyzerSettings.psd1)
+          $findings | Format-Table -AutoSize
+          if ($findings.Count -ne 0) { exit 1 }
+
+      - name: Reject conflict markers and oversized Dart sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nE '^(<<<<<<< |>>>>>>> )' -- ':!*.lock'; then
+            echo 'Unresolved conflict marker found.' >&2
+            exit 1
+          fi
+          failed=0
+          while IFS= read -r file; do
+            case "$file" in
+              *.g.dart|*.freezed.dart|*/generated_plugin_registrant.dart) continue ;;
+            esac
+            lines=$(wc -l < "$file")
+            if (( lines > 500 )); then
+              echo "$file has $lines lines (maximum: 500)." >&2
+              failed=1
+            fi
+          done < <(git ls-files '*.dart')
+          exit "$failed"
+
+      - name: Verify Git LFS objects
+        run: git lfs fsck
+
+      - name: Verify local Markdown links and anchors
+        run: ruby tools/check-markdown-links.rb
+
   # Scaffold + validate + pack every mod template so template rot is caught
   # on the PR that causes it, not at the next release.
   template-matrix:
     name: Template ${{ matrix.template }}
     runs-on: ubuntu-latest
-    env:
-      # The ui template needs the game's managed refs (secret); fork PRs have
-      # no secrets, so that one leg no-ops there and still runs on main.
-      REFS_AVAILABLE: ${{ secrets.ROBOTOPIA_REFS_URL != '' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         template: [minimal, gameplay, gamemode, service, ui, asset, world]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.301"
 
       - name: Set up Dart
-        uses: dart-lang/setup-dart@v1
+        uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1
         with:
-          sdk: stable
+          sdk: "3.11.1"
 
-      - name: Restore Robotopia managed refs
-        if: matrix.template == 'ui' && env.REFS_AVAILABLE == 'true'
+      - name: Install archive dependencies
+        if: matrix.template == 'ui'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Resolve Robotopia refs cache key
+        if: matrix.template == 'ui'
+        id: refs-cache
         shell: pwsh
         env:
-          ROBOTOPIA_REFS_URL: ${{ secrets.ROBOTOPIA_REFS_URL }}
-          ROBOTOPIA_REFS_SHA256: ${{ secrets.ROBOTOPIA_REFS_SHA256 }}
-          ROBOTOPIA_REFS_TOKEN: ${{ secrets.ROBOTOPIA_REFS_TOKEN }}
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP "robotopia-managed-refs.zip"
-          $headers = @{}
-          if (![string]::IsNullOrWhiteSpace($env:ROBOTOPIA_REFS_TOKEN)) {
-            $headers["Authorization"] = "Bearer $env:ROBOTOPIA_REFS_TOKEN"
-          }
-          Invoke-WebRequest -Uri $env:ROBOTOPIA_REFS_URL -Headers $headers -OutFile $archive
+          ROBOTOPIA_REFS_SOURCE_PLATFORM: ${{ vars.ROBOTOPIA_REFS_SOURCE_PLATFORM }}
+        run: ./tools/restore-robotopia-managed-refs.ps1 -Source public -CacheKeyOnly
 
-          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          $expected = $env:ROBOTOPIA_REFS_SHA256.Trim().ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "Robotopia refs SHA-256 mismatch. Expected $expected but got $actual."
-          }
+      - name: Cache Robotopia managed refs
+        if: matrix.template == 'ui'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/robotopia-managed-refs-cache
+          key: ${{ steps.refs-cache.outputs.key }}
 
-          $extract = Join-Path $env:RUNNER_TEMP "robotopia-managed-refs"
-          Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
-          $unity = Get-ChildItem -LiteralPath $extract -Recurse -Filter "UnityEngine.dll" -File |
-            Select-Object -First 1
-          if ($null -eq $unity) {
-            throw "Reference archive did not contain UnityEngine.dll."
-          }
-          $managed = Split-Path $unity.FullName -Parent
-          "RobotopiaManagedDir=$managed" >> $env:GITHUB_ENV
-
-      - name: Skip ui template without managed refs
-        if: matrix.template == 'ui' && env.REFS_AVAILABLE != 'true'
-        run: echo "Skipping ui template — managed-ref secrets are unavailable (fork PR)."
+      - name: Restore Robotopia managed refs
+        if: matrix.template == 'ui'
+        shell: pwsh
+        env:
+          ROBOTOPIA_REFS_CACHE: ${{ runner.temp }}/robotopia-managed-refs-cache
+          ROBOTOPIA_REFS_SOURCE_PLATFORM: ${{ vars.ROBOTOPIA_REFS_SOURCE_PLATFORM }}
+        run: ./tools/restore-robotopia-managed-refs.ps1 -Source public -RequireLatest
 
       # Scaffolds inside the checkout (not RUNNER_TEMP) so the generated
-      # ProjectReference to src/Robotopia.Mods.Abstractions stays a relative
+      # ProjectReference to src/TopiaForge.Mods.Abstractions stays a relative
       # path, matching the release workflow's smoke test.
       - name: Scaffold, validate, pack, and re-validate
-        if: matrix.template != 'ui' || env.REFS_AVAILABLE == 'true'
         shell: bash
-        working-directory: apps/robotopia_cli
+        working-directory: apps/topiaforge_cli
         run: |
-          dart pub get
-          dart run bin/robotopia.dart new mod "ci.${{ matrix.template }}" \
+          dart pub get --enforce-lockfile
+          dart run bin/topiaforge.dart new mod "ci.${{ matrix.template }}" \
             --template "${{ matrix.template }}" \
             --name "CI ${{ matrix.template }}" \
             --dir ../../.ci-smoke
-          dart run bin/robotopia.dart check package "../../.ci-smoke/ci.${{ matrix.template }}"
-          package=$(dart run bin/robotopia.dart pack \
+          dart run bin/topiaforge.dart check package "../../.ci-smoke/ci.${{ matrix.template }}"
+          package=$(dart run bin/topiaforge.dart pack \
             --project "../../.ci-smoke/ci.${{ matrix.template }}" \
             --output "$RUNNER_TEMP/ci-pack" | tail -1)
           echo "Packed: $package"
-          dart run bin/robotopia.dart check package "$package"
+          dart run bin/topiaforge.dart check package "$package"
+
+  required-ci:
+    name: Required / CI validation
+    if: always()
+    needs:
+      - csharp-tests
+      - dart-tests
+      - flutter-tests
+      - sidecar-checks
+      - repository-audits
+      - template-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce all validation jobs
+        env:
+          CSHARP: ${{ needs.csharp-tests.result }}
+          DART: ${{ needs.dart-tests.result }}
+          FLUTTER: ${{ needs.flutter-tests.result }}
+          SIDECAR: ${{ needs.sidecar-checks.result }}
+          REPOSITORY: ${{ needs.repository-audits.result }}
+          TEMPLATES: ${{ needs.template-matrix.result }}
+        run: |
+          set -euo pipefail
+          for result in "$CSHARP" "$DART" "$FLUTTER" "$SIDECAR" "$REPOSITORY" "$TEMPLATES"; do
+            test "$result" = success
+          done

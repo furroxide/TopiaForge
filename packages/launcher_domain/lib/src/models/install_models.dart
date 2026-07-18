@@ -98,6 +98,7 @@ class CompatFinding {
 class GameCompatStatus {
   const GameCompatStatus({
     required this.status,
+    this.gameVersion,
     this.gameVersionLabel = '',
     this.surfaceHash = '',
     this.gameCodeSha = '',
@@ -106,6 +107,9 @@ class GameCompatStatus {
   });
 
   final String status;
+
+  /// Canonical SemVer reported by the extractor, or `null` when unavailable.
+  final String? gameVersion;
   final String gameVersionLabel;
   final String surfaceHash;
   final String gameCodeSha;
@@ -126,6 +130,7 @@ class GameCompatStatus {
 
   Map<String, Object?> toJson() => {
     'status': status,
+    if (gameVersion != null) 'gameVersion': gameVersion,
     'gameVersionLabel': gameVersionLabel,
     'surfaceHash': surfaceHash,
     'gameCodeSha': gameCodeSha,
@@ -136,6 +141,7 @@ class GameCompatStatus {
   factory GameCompatStatus.fromJson(Map<String, Object?> json) =>
       GameCompatStatus(
         status: (json['status'] as String?) ?? 'unknown',
+        gameVersion: _canonicalOptionalGameVersion(json['gameVersion']),
         gameVersionLabel: (json['gameVersionLabel'] as String?) ?? '',
         surfaceHash: (json['surfaceHash'] as String?) ?? '',
         gameCodeSha: (json['gameCodeSha'] as String?) ?? '',
@@ -145,6 +151,13 @@ class GameCompatStatus {
             .map(CompatFinding.fromJson)
             .toList(),
       );
+}
+
+String? _canonicalOptionalGameVersion(Object? value) {
+  if (value is! String || value.trim().isEmpty) {
+    return null;
+  }
+  return SemanticVersion.tryParse(value.trim())?.toString();
 }
 
 // The extractor prints severities Title-cased (Info/Warning/Error); map to the domain enum.
@@ -172,6 +185,8 @@ class GameInstall {
     required this.bepInExStatus,
     required this.loaderStatus,
     this.layout = GameInstallLayout.windowsNative,
+    this.gameVersion,
+    this.gameVersionLabel = '',
     this.issues = const [],
     this.compatStatus,
   });
@@ -181,6 +196,15 @@ class GameInstall {
   final ComponentState bepInExStatus;
   final ComponentState loaderStatus;
   final GameInstallLayout layout;
+
+  /// Canonical SemVer used for manifest compatibility checks. Robotopia game
+  /// build `N` is represented as `0.0.N`; `null` means the launcher could not
+  /// safely establish the installed build.
+  final String? gameVersion;
+
+  /// Human-readable provenance corresponding to [gameVersion], normally
+  /// `build N`. This remains independent of the optional reflection audit.
+  final String gameVersionLabel;
   final List<LauncherIssue> issues;
 
   /// Informational game-compatibility status. Deliberately separate from [issues] so it can never affect
@@ -192,12 +216,19 @@ class GameInstall {
       bepInExStatus != ComponentState.ready ||
       loaderStatus != ComponentState.ready;
 
-  GameInstall copyWith({GameCompatStatus? compatStatus}) => GameInstall(
+  GameInstall copyWith({
+    GameCompatStatus? compatStatus,
+    String? gameVersion,
+    bool clearGameVersion = false,
+    String? gameVersionLabel,
+  }) => GameInstall(
     path: path,
     executablePath: executablePath,
     bepInExStatus: bepInExStatus,
     loaderStatus: loaderStatus,
     layout: layout,
+    gameVersion: clearGameVersion ? null : gameVersion ?? this.gameVersion,
+    gameVersionLabel: gameVersionLabel ?? this.gameVersionLabel,
     issues: issues,
     compatStatus: compatStatus ?? this.compatStatus,
   );
@@ -245,24 +276,6 @@ class RegistryMod {
   }
 }
 
-class LegacyMod {
-  const LegacyMod({
-    required this.id,
-    required this.name,
-    required this.path,
-    required this.kind,
-    this.canMigrate = false,
-    this.details = '',
-  });
-
-  final String id;
-  final String name;
-  final String path;
-  final String kind;
-  final bool canMigrate;
-  final String details;
-}
-
 class RepairReport {
   const RepairReport({required this.actions, required this.issues});
 
@@ -292,7 +305,6 @@ class LauncherSnapshot {
     required this.registryMods,
     required this.packageSources,
     required this.worldCatalog,
-    required this.legacyMods,
     required this.recentLog,
     this.gameInstall,
     this.launcherUpdates = const LauncherUpdateSettings(),
@@ -308,7 +320,6 @@ class LauncherSnapshot {
   final List<RegistryMod> registryMods;
   final List<PackageSource> packageSources;
   final WorldCatalog worldCatalog;
-  final List<LegacyMod> legacyMods;
   final String recentLog;
   final LauncherUpdateSettings launcherUpdates;
 

@@ -27,23 +27,23 @@ void _createRuntimeSources(Directory repoRoot) {
     p.join(
       repoRoot.path,
       'src',
-      'Robotopia.ModManager',
+      'TopiaForge.ModManager',
       'bin',
       'Release',
       'netstandard2.1',
     ),
   )..createSync(recursive: true);
   for (final dll in [
-    'Robotopia.ModManager.dll',
-    'Robotopia.ModManager.Core.dll',
-    'Robotopia.Mods.Abstractions.dll',
-    'Robotopia.Mods.UnityUi.dll',
+    'TopiaForge.ModManager.dll',
+    'TopiaForge.ModManager.Core.dll',
+    'TopiaForge.Mods.Abstractions.dll',
+    'TopiaForge.Mods.UnityUi.dll',
   ]) {
     File(p.join(loader.path, dll)).writeAsStringSync('');
   }
 }
 
-// The built-in local source derives its catalog from the .robotopiamod packages in dist/, so the
+// The built-in local source derives its catalog from the .topiaforgemod packages in dist/, so the
 // fixture publishes a real package there rather than a hand-written registry document.
 void _createRegistry(Directory repoRoot) {
   final dist = Directory(p.join(repoRoot.path, 'dist'))
@@ -51,7 +51,7 @@ void _createRegistry(Directory repoRoot) {
   final archive = Archive()
     ..addFile(
       ArchiveFile.string(
-        'robotopia.mod.json',
+        'topiaforge.mod.json',
         jsonEncode(
           _manifestJson(
             'registry.sample',
@@ -67,7 +67,7 @@ void _createRegistry(Directory repoRoot) {
       ArchiveFile.string('${_assemblyName('registry.sample')}.dll', 'dll'),
     );
   File(
-    p.join(dist.path, 'registry.sample-1.0.0.robotopiamod'),
+    p.join(dist.path, 'registry.sample-1.0.0.topiaforgemod'),
   ).writeAsBytesSync(ZipEncoder().encode(archive));
 }
 
@@ -80,13 +80,13 @@ void _writeDistPackage(
   final archive = Archive()
     ..addFile(
       ArchiveFile.string(
-        'robotopia.mod.json',
+        'topiaforge.mod.json',
         jsonEncode(_manifestJson(id, version)),
       ),
     )
     ..addFile(ArchiveFile.string('${_assemblyName(id)}.dll', 'dll'));
   File(
-    p.join(dist.path, '$id-$version.robotopiamod'),
+    p.join(dist.path, '$id-$version.topiaforgemod'),
   ).writeAsBytesSync(ZipEncoder().encode(archive));
 }
 
@@ -97,12 +97,15 @@ File _createPackage(
   List<Map<String, Object?>> dependencies = const [],
   List<Map<String, Object?>> worldGamemodes = const [],
   List<String> apiAssemblies = const [],
+  String? gameVersionRange,
+  String? loaderVersionRange,
+  String? sdkVersionRange,
 }) {
-  final package = File(p.join(root.path, '$id-$version.robotopiamod'));
+  final package = File(p.join(root.path, '$id-$version.topiaforgemod'));
   final archive = Archive()
     ..addFile(
       ArchiveFile.string(
-        'robotopia.mod.json',
+        'topiaforge.mod.json',
         jsonEncode(
           _manifestJson(
             id,
@@ -110,6 +113,9 @@ File _createPackage(
             dependencies: dependencies,
             worldGamemodes: worldGamemodes,
             apiAssemblies: apiAssemblies,
+            gameVersionRange: gameVersionRange,
+            loaderVersionRange: loaderVersionRange,
+            sdkVersionRange: sdkVersionRange,
           ),
         ),
       ),
@@ -128,14 +134,20 @@ Map<String, Object?> _manifestJson(
   List<Map<String, Object?>> dependencies = const [],
   List<Map<String, Object?>> worldGamemodes = const [],
   List<String> apiAssemblies = const [],
+  String? gameVersionRange,
+  String? loaderVersionRange,
+  String? sdkVersionRange,
 }) => {
-  'schemaVersion': 2,
+  'schemaVersion': 3,
   'name': id,
   'displayName': id,
   'version': version,
-  'author': {'name': 'QuantumWorks'},
+  'author': {'name': 'TopiaForge'},
   'entryAssembly': '${_assemblyName(id)}.dll',
   'entryType': '$id.Entry',
+  'supportedGameVersionRange': ?gameVersionRange,
+  'supportedLoaderVersionRange': ?loaderVersionRange,
+  'supportedSdkVersionRange': ?sdkVersionRange,
   if (dependencies.isNotEmpty)
     'vpmDependencies': {
       for (final item in dependencies)

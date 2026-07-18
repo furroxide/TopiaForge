@@ -74,7 +74,7 @@ class DeveloperProjectResolver {
     }
 
     final lock = DeveloperLock(
-      schemaVersion: 1,
+      schemaVersion: 2,
       projectId: project.id,
       resolvedAtUtc: (now ?? DateTime.now().toUtc()).toIso8601String(),
       packages: [
@@ -192,7 +192,8 @@ class DeveloperProjectResolver {
     return a.manifest.id.compareTo(b.manifest.id);
   }
 
-  bool _isPrerelease(String version) => version.contains('-');
+  bool _isPrerelease(String version) =>
+      SemanticVersion.tryParse(version)?.isPrerelease ?? false;
 
   void _checkConflicts(Iterable<RegistryMod> mods, List<LauncherIssue> issues) {
     final byId = {for (final mod in mods) mod.manifest.id.toLowerCase(): mod};
